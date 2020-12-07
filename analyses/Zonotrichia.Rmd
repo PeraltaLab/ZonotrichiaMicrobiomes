@@ -1,0 +1,412 @@
+---
+title: "Zonotrichia Microbiomes"
+author: "Daniel Newhouse, Ariane Peralta, Chris Balakrishnan"
+date: "Last updated on `r format(Sys.time(), '%d %B, %Y')`"
+header-includes:
+  - \usepackage{array}
+  - \usepackage{graphics}
+  - \usepackage[utf8]{inputenc}
+output: 
+  pdf_document:
+  fig_caption: true
+---
+
+Project Description: Fill out
+
+# Initial Setup
+```{r Initial Setup, include=FALSE}
+rm(list=ls())
+setwd("~/GitHub/Zonotrichia/analyses")
+se <- function(x, ...){sd(x, na.rm = TRUE)/sqrt(length(na.omit(x)))}
+ci <- function(x, ...){1.96 * sd(x,na.rm = TRUE)}
+
+# Code Dependencies
+source("../bin/DiversityFunctions.R")
+source("../bin/MothurTools.R")
+require("vegan")
+require("nlme")
+require("reshape")
+require("ggplot2")
+require("ade4")
+require("tidyr")
+require("reshape2")
+require("picante")
+```
+#Import Files
+## Environmental Data
+```{r Import Files - Env, include=FALSE}
+# Import Environmental Data
+design <- read.csv("../data/Zonotrichia_design.csv", header=TRUE)
+```
+
+
+## Microbial Data
+```{r Import Files - Bacteria, include=FALSE}
+# Import OTU data
+# Import Raw Data
+otu.in <- read.otu("../data/Zonotrichia.opti_mcc.shared")
+
+# Remove OTUs with less than two occurences across all sites
+otus <- otu.in[, which(colSums(otu.in) >= 2)]
+
+# Make Presence Absence Matrix
+dataPA <- (otus > 0) * 1
+
+# Make Relative Abundance Matrices
+dataREL <- otus
+for(i in 1:dim(otus)[1]){
+  dataREL[i,] <- otus[i,]/sum(otus[i,])
+}
+
+# Import Taxonomy File
+otu.tax <- read.tax(taxonomy = "../data/Zonotrichia.opti_mcc.0.03.cons.taxonomy",
+                   format = "rdp", tax.levels = 6, col.tax = 3)
+```
+# Diversity Metrics - Hypothesis Testing
+```{r Diversity Metrics - Bacteria, echo=TRUE}
+# Rarefy Abundances (min abundance is 8106. We are sampling to 8000)
+min(rowSums(otus))
+max(rowSums(otus))
+mean(rowSums(otus))
+
+# OTU table - remove otu's w/ < 2 occurrences across all sites
+otu_removal <- otus[, which(colSums(otus) >= 2)]
+dim(otu_removal)
+
+aa <- (rowSums(otu_removal))
+aa 
+
+Zono.r <- rrarefy(otus, 4000)
+
+# Fisher's Alpha
+fisher <- fisher.alpha(Zono.r)
+
+# Species Richness
+richness <- rowSums((Zono.r >= 1))
+
+# Shannon Diversity
+shannon <- diversity(Zono.r, "shannon")
+
+# Simpson's Evenness
+simp.even <- apply(Zono.r, 1, simp_even)
+
+#Pielou’s evenness
+J <- shannon/log(specnumber(Zono.r[,-c(1:1)]))
+
+#combined richness, diversity, evenness
+diversity <- cbind(design,richness,shannon,simp.even,J)
+```
+
+# Simple Hypothesis Testing - Microbes
+```{r perMANOVA - Bacteria - , echo=TRUE}
+#PERMANOVA 
+new.data <-cbind(design,dataREL)
+
+new.data.WTSP.NY <- subset(new.data, species == "WTSP" & location == "NY") #subset WTSP and NY location
+
+adonis = adonis(new.data.WTSP.NY[,-c(1:6)]~morph, method = "bray", data = new.data.WTSP.NY, perm=1000)
+adonis
+
+adonis = adonis(new.data[,-c(1:6)]~species, method = "bray", data = new.data, perm=1000)
+adonis
+```
+
+# Microbial Ordinations
+
+## Principal Coordinates Ordination
+```{r Ordination (PCoA) - Bacteria - all years, include=FALSE}
+# Principal Coordinates Analysis - WTSP NY x morph
+dataREL.dist <- vegdist(new.data.WTSP.NY[,-c(1:6)], method="bray")
+
+pcoa <- cmdscale(dataREL.dist, k=3, eig=TRUE, add=FALSE)
+  # Classical (Metric) Multidimensional Scaling; returns PCoA coordinates
+  # eig=TRUE returns eigenvalues; k = # of dimensions to calculate
+
+explainvar1b <- round(pcoa$eig[1] / sum(pcoa$eig), 3) * 100
+explainvar2b <- round(pcoa$eig[2] / sum(pcoa$eig), 3) * 100
+sum.eigb <- sum(explainvar1b, explainvar2b)
+
+explainvar1b #25.2
+explainvar2b #16.5
+```
+
+```{r Ordination (PCoA) - Bacteria -, include=FALSE}
+pcoa.groups <- paste(new.data.WTSP.NY$age, new.data.WTSP.NY$morph, sep = "_")
+pcoa.points <- data.frame(pcoa$points, group = pcoa.groups)
+
+# Calculate Centroids (mean and SE)
+pcoa.L.centroids <- melt(pcoa.points, id="group", measure.vars = c("X1", "X2"))
+pcoa.centroids <- acast(pcoa.L.centroids, variable ~ group, mean)
+pcoa.centroids.se <- acast(pcoa.L.centroids, variable ~ group, se)
+pcoa.centroids.sd <- acast(pcoa.L.centroids, variable ~ group, sd)
+
+# Combine
+pcoa.cent.dataframe <- cbind(t(pcoa.centroids), t(pcoa.centroids.se))
+colnames(pcoa.cent.dataframe) <- c("V1", "V2", "V1e", "V2e")
+pcoa.cent.treats <- rownames(pcoa.cent.dataframe)
+
+pcoa.col <- as.factor(sapply(strsplit(pcoa.cent.treats, "_"), `[`, 2)) # morph
+pcoa.shape <- as.factor(sapply(strsplit(pcoa.cent.treats, "_"), `[`, 1))  # age
+
+# Principal Coordinates Analysis 
+df1a <- as.data.frame(pcoa.cent.dataframe)
+plot1a <- ggplot(df1a, aes(x=V1, y=V2, colour=pcoa.col, shape = pcoa.shape,
+                 group = interaction(pcoa.col, pcoa.shape))) + theme_bw() 
+plot1a + theme(panel.grid.major = element_blank(), 
+               panel.grid.minor = element_blank(), 
+               axis.line = element_line(colour = "black")) + 
+theme(panel.background = element_blank()) + 
+  geom_errorbarh(aes(xmax=V1+V1e, xmin=V1-V1e, height=0.01), colour="black") +    
+  geom_errorbar(aes(ymax=V2+V2e, ymin=V2-V2e, width=0.01), colour="black") +
+  geom_point(aes(fill=pcoa.col), colour = "black", size=5, stroke = 0.75) + 
+  scale_colour_manual(labels = c("tan","white"), 
+                   values = c("#CC9966", "#FFFFFF")) + 
+  scale_fill_manual(labels = c("tan","white"), 
+                   values = c("#CC9966", "#FFFFFF")) + 
+  scale_shape_manual(labels = c("AHY","N"),
+                   values = c(21, 24)) + 
+  theme(axis.title = element_text(size=18), axis.text=element_text(size=14), 
+          axis.text.x = element_text(size=14), 
+          panel.border = element_rect(colour = "black", size=1.25)) + 
+  theme(axis.ticks.length=unit(0.3,"cm")) + 
+  xlab("PCoA 1 (25.2%)") + ylab("PCoA 2 (16.5%)") + 
+  labs(fill = "Morph", shape = "Age") +
+  guides(fill = guide_legend(override.aes = list(pch=21, size = 4, colour="black")))
+
+ggsave("../figures/16SrRNA_WTSPxMorph.pdf", plot=last_plot(), device=NULL, path=NULL, scale=1, width=NA, height=NA, dpi=900, limitsize=TRUE)
+
+```
+
+# OTU graph if interested in individual OTUs
+```{r Zonotrichia OTU graphs, include=FALSE}
+#NOTE: 
+#Otu0113 (451 reads)
+#Otu1461 (12 reads)
+#Otu2496 (6 reads)
+#Otu3114 (4 reads)
+
+p <- ggplot(new.data, aes(x=Transect, y=Otu0113, shape=as.factor(Location), color=as.factor(Transect), fill=as.factor(Transect))) + stat_summary(fun.data=mean_cl_boot,size=0.75) + scale_shape_manual(name="Location", values=c(21, 24, 22, 23)) +scale_color_manual(name="Transect", values=c("#33CCFF", "#CCCCCC","#336600"), labels = c("SA","SOURCE","WWWD")) +scale_fill_manual(name="Transect", values=c("#33CCFF", "#CCCCCC","#336600"), labels = c("SA","SOURCE","WWWD"))   
+
+p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line =element_line(colour = "black")) + 
+    theme(axis.title=element_text(vjust=1,size=14,face="bold"),
+          axis.text=element_text(size=14), axis.text.x = element_text(vjust=0.75, 
+          hjust=0.6, size=14), panel.border = element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Transect", y = "Rel. Abun. Mycobacteria OTU0113") 
+  
+ggsave("../figures/OTU0113.pdf", plot=last_plot(), device=NULL, path=NULL, scale=1, width=NA, height=NA, dpi=300, limitsize=TRUE)
+
+p <- ggplot(new.data, aes(x=Transect, y=Otu1461, shape=as.factor(Location), color=as.factor(Transect), fill=as.factor(Transect))) + stat_summary(fun.data=mean_cl_boot,size=0.75) + scale_shape_manual(name="Location", values=c(21, 24, 22, 23)) +scale_color_manual(name="Transect", values=c("#33CCFF", "#CCCCCC","#336600"), labels = c("SA","SOURCE","WWWD")) +scale_fill_manual(name="Transect", values=c("#33CCFF", "#CCCCCC","#336600"), labels = c("SA","SOURCE","WWWD"))   
+
+p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line =element_line(colour = "black")) + 
+    theme(axis.title=element_text(vjust=1,size=14,face="bold"),
+          axis.text=element_text(size=14), axis.text.x = element_text(vjust=0.75, 
+          hjust=0.6, size=14), panel.border = element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Transect", y = "Rel. Abun. Mycobacteria OTU1461") 
+  
+ggsave("../figures/OTU1461.pdf", plot=last_plot(), device=NULL, path=NULL, scale=1, width=NA, height=NA, dpi=300, limitsize=TRUE)
+
+p <- ggplot(new.data, aes(x=Transect, y=Otu2496, shape=as.factor(Location), color=as.factor(Transect), fill=as.factor(Transect))) + stat_summary(fun.data=mean_cl_boot,size=0.75) + scale_shape_manual(name="Location", values=c(21, 24, 22, 23)) +scale_color_manual(name="Transect", values=c("#33CCFF", "#CCCCCC","#336600"), labels = c("SA","SOURCE","WWWD")) +scale_fill_manual(name="Transect", values=c("#33CCFF", "#CCCCCC","#336600"), labels = c("SA","SOURCE","WWWD"))   
+
+p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line =element_line(colour = "black")) + 
+    theme(axis.title=element_text(vjust=1,size=14,face="bold"),
+          axis.text=element_text(size=14), axis.text.x = element_text(vjust=0.75, 
+          hjust=0.6, size=14), panel.border = element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Transect", y = "Rel. Abun. Mycobacteria OTU0113") 
+  
+ggsave("../figures/OTU2496.pdf", plot=last_plot(), device=NULL, path=NULL, scale=1, width=NA, height=NA, dpi=300, limitsize=TRUE)
+
+p <- ggplot(new.data, aes(x=Transect, y=Otu3114, shape=as.factor(Location), color=as.factor(Transect), fill=as.factor(Transect))) + stat_summary(fun.data=mean_cl_boot,size=0.75) + scale_shape_manual(name="Location", values=c(21, 24, 22, 23)) +scale_color_manual(name="Transect", values=c("#33CCFF", "#CCCCCC","#336600"), labels = c("SA","SOURCE","WWWD")) +scale_fill_manual(name="Transect", values=c("#33CCFF", "#CCCCCC","#336600"), labels = c("SA","SOURCE","WWWD"))   
+
+p + theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line =element_line(colour = "black")) + 
+    theme(axis.title=element_text(vjust=1,size=14,face="bold"),
+          axis.text=element_text(size=14), axis.text.x = element_text(vjust=0.75, 
+          hjust=0.6, size=14), panel.border = element_rect(colour = "black",size=1)) + 
+    theme(axis.ticks.length=unit(0.3,"cm")) + labs(x = "Transect", y = "Rel. Abun. Mycobacteria OTU0113") 
+  
+ggsave("../figures/OTU3114.pdf", plot=last_plot(), device=NULL, path=NULL, scale=1, width=NA, height=NA, dpi=300, limitsize=TRUE)
+```
+
+# Phylogenetic Analysis
+```{r (Phylogenetic Diversity), include=FALSE}
+# Phylogenetic Diversity - analysis by Mario Muscarella
+# Load Tree
+tree <- read.tree("../data/CSI.bac.rename.tree") #get Zonotrichia ...rename.tree file
+tree$tip.label <- gsub("\\|", "", tree$tip.label)
+
+sum(tree$tip.label %in% colnames(csi_otu) == FALSE)
+
+# Small Branches
+sum(tree$edge.length < 0.0000001)
+
+# Import Unifrac Matrix #get Zonotrichia ...weighted.phylip.dist file
+unifrac.raw <- read.delim("../data/CSI.bac.tree1.weighted.phylip.dist",
+                             header = F, skip = 1, row.names = 1) 
+
+row.names(unifrac.raw) <- gsub("    ", "", row.names(unifrac.raw))
+
+unifrac <- unifrac.raw[which(row.names(unifrac.raw) %in%
+                                   row.names(otu_final)),
+                             which(row.names(unifrac.raw) %in%
+                                   row.names(otu_final))]
+
+rownames(unifrac) <- gsub("     ", "", row.names(unifrac))
+colnames(unifrac) <- rownames(unifrac)
+dim(unifrac)
+
+#odd.sites <- c("CSI033","CSI101")
+
+# Make into Distance Matrix
+unifrac.dist <- as.dist(unifrac, upper = T, diag = T)
+
+# Calculate Phylo Diversity
+phylo.d <- pd(otus, tree, include.root = F)
+all.equal(rownames(design), rownames(phylo.d))
+
+#phylo_final <- phylo.d[setdiff(rownames(phylo.d), odd.sites), ]
+#design_final <- design.full[setdiff(rownames(design.full), odd.sites), ]
+#design.ns <- design.ns[setdiff(rownames(design.ns), odd.sites), ]
+#all.equal(rownames(design_final), rownames(phylo_final))
+# REMOVE source tanks from otu file
+# REMOVE source tanks Number 1,2,3 from otu_final and use design.ns (manually removed source tanks)
+#temp <- rownames(design_final[which(design_final$Number %in% c(1,2,3)), ])
+#phylo_final.ns <- phylo_final[-(which(rownames(phylo_final) %in% temp)), ]
+dim(phylo.d)
+dim(design)
+
+zono.phylo <- cbind(design,phylo.d)
+```
+
+```{r}
+library("ggtree"); library("ape")
+tree <- read.tree("../data/CSI.bac.rename.tree")
+
+# otu_final, design_final
+design.45 <- design_final[which(design_final$Date2 == "45"), ]
+design.45 <- design.45[which(design.45$Dispersal %in% c(2, 3)), ]
+otus.45 <- otu_final[which(rownames(otu_final) %in% rownames(design.45)), ]
+otus.45 <- otus.45[, which(colSums(otus.45) > 100)]
+
+otus.45 <- otus.45[, -c(which(colnames(otus.45) %in% 
+                                csi.tax$OTU[csi.tax$Phylum %in%
+                                c("Bacteria_unclassified", "OD1", 
+                                  "BRC1", "Spirochaetes", 
+                                  "Tenericutes", "Deferribacteres",
+                                  "Chloroflexi", "Deinococcus-Thermus", "WS3")]))]
+
+otus.45 <- otus.45[, -c(which(colnames(otus.45) %in% 
+                                csi.tax$OTU[csi.tax$Class %in%
+                                c("Bacteroidetes_unclassified",
+                           "Bacteroidetes_incertae_sedis_class_incertae_sedis",
+                           "Proteobacteria_unclassified", "WS3", "Bacteroidia", "Chlorobi", "Epsilonproteobacteria")]))]
+
+tree$tip.label <- gsub(".{1}$", "", tree$tip.label)
+
+tree.labs <- tree$tip.label
+tree.labs %in% colnames(otus.45)
+
+rm.otus <- setdiff(tree.labs, colnames(otus.45))
+
+tree.2 <- drop.tip(tree, rm.otus)
+
+str(tree.2)
+
+length(tree.2$tip.label)
+sum(tree.2$tip.label %in% colnames(otus.45))
+
+tree.otus <- tree.2$tip.label
+tree.tax <- csi.tax[which(csi.tax$OTU %in% tree.otus), ]
+table(tree.tax$Class)
+
+tree.tax.2 <- tree.tax[order(match(tree.tax$OTU, tree.2$tip.label)), ]
+all.equal(as.character(tree.tax.2$OTU), tree.2$tip.label)
+
+phylum2 <- tree.tax.2$Phylum
+for(i in 1:length(phylum2)){
+  if (phylum2[i] == "Proteobacteria"){
+    phylum2[i] <- tree.tax.2$Class[i]
+  }
+  if (phylum2[i] == "Bacteroidetes"){
+    phylum2[i] <- tree.tax.2$Class[i]
+  }
+}
+
+table(phylum2)
+
+groupInfo <- split(tree.2$tip.label, phylum2)
+Phy.tree <- groupOTU(tree.2, groupInfo, group_name = "phylum2")
+levels(attributes(Phy.tree)$phylum2) <- c(names(groupInfo))
+
+p <- ggtree(Phy.tree, layout="rectangular") + theme(legend.position="top", 
+        legend.key = element_rect(colour = NA)) + 
+  geom_tippoint(aes(color=phylum2)) 
+
+
+# Set treatments
+treatments1 <- as.factor(design.45$Salinity) 
+levels(treatments1) <- c("0","5","9","13")
+
+sal.ind <- indval(otus.45, treatments1)
+levels(treatments1)
+summary(sal.ind)
+sal.inds <- which(sal.ind$pval <= 0.05)
+sal.indicators <- as.data.frame(matrix(NA, nrow = length(sal.inds), ncol = 4))
+colnames(sal.indicators) <- c("OTU", "Cluster", "IndVal", "Prob")
+sal.indicators$OTU <- names(sal.inds)
+sal.indicators$Cluster <- sal.ind$maxcls[sal.inds]
+sal.indicators$IndVal <- sal.ind$indcls[sal.inds]
+sal.indicators$Prob <- sal.ind$pval[sal.inds]
+
+sal.dat <- as.data.frame(matrix(NA, ncol = 5, nrow = length(tree.2$tip.label)))
+rownames(sal.dat) <- tree.2$tip.label
+colnames(sal.dat) <- c(levels(treatments1), ">0")
+
+for(i in 1:dim(sal.indicators)[1]){
+  temp <- sal.indicators[i, ]
+  sal.dat[which(row.names(sal.dat) == temp$OTU), temp$Cluster] <- 10
+}
+
+
+treatments1 <- as.factor(design.45$Salinity) 
+levels(treatments1) <- c("0","1","1","1")
+sal.ind <- indval(otus.45, treatments1)
+levels(treatments1)
+summary(sal.ind)
+sal.inds <- which(sal.ind$pval <= 0.05)
+sal.indicators <- as.data.frame(matrix(NA, nrow = length(sal.inds), ncol = 4))
+colnames(sal.indicators) <- c("OTU", "Cluster", "IndVal", "Prob")
+sal.indicators$OTU <- names(sal.inds)
+sal.indicators$Cluster <- sal.ind$maxcls[sal.inds]
+sal.indicators$IndVal <- sal.ind$indcls[sal.inds]
+sal.indicators$Prob <- sal.ind$pval[sal.inds]
+
+for(i in 1:dim(sal.indicators)[1]){
+  temp <- sal.indicators[i, ]
+  if(temp$Cluster == 2){
+    sal.dat[which(row.names(sal.dat) == temp$OTU), 5] <- 10
+  }
+}
+
+
+treatments2 <- droplevels(as.factor(design.45$Dispersal))
+levels(treatments2) <- c("2", "3")
+
+dis.ind <- indval(otus.45, treatments2)
+levels(treatments2)
+summary(dis.ind)
+dis.inds <- which(dis.ind$pval <= 0.05)
+dis.indicators <- as.data.frame(matrix(NA, nrow = length(dis.inds), ncol = 4))
+colnames(dis.indicators) <- c("OTU", "Cluster", "IndVal", "Prob")
+dis.indicators$OTU <- names(dis.inds)
+dis.indicators$Cluster <- dis.ind$maxcls[dis.inds]
+dis.indicators$IndVal <- dis.ind$indcls[dis.inds]
+dis.indicators$Prob <- dis.ind$pval[dis.inds]
+
+csi.tax[which(csi.tax$OTU %in% dis.indicators$OTU), ]
+csi.tax[which(csi.tax$OTU %in% sal.indicators$OTU), ]
+
+gheatmap(p, sal.dat, width = 0.5, colnames_angle=90, hjust=1, 
+         low = "red", high = "red")
+
+ggsave("../figures/indicator.tree.pdf", width = 10, height = 8, units = "in")
+
+```
